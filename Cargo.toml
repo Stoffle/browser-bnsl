@@ -1,9 +1,9 @@
 [package]
-name = "eframe_template"
+name = "browser-bnsl"
 version = "0.1.0"
-authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
+authors = ["Chris Robinson <robinsoniacs@gmail.com>"]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.68"
 
 
 [dependencies]
@@ -17,6 +17,7 @@ eframe = { version = "0.21.0", default-features = false, features = [
 
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
+csv = "1.2.1"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
