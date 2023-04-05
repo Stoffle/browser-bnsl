@@ -1,25 +1,36 @@
 use csv;
+use crate::sl;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
+use std::thread;
+
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct BrowserBNSL {
-    // Example stuff:
-    label: String,
-
     // this how you opt-out of serialization of a member
     #[serde(skip)]
-    value: f32,
-    dropped_files: Vec<egui::DroppedFile>,
+    sl_states: Vec<sl::SLState>,
+    //dropped_files: Vec<egui::DroppedFile>,
+    #[serde(skip)]
+    busy: bool,
+    #[serde(skip)]
+    tx: Sender<sl::SLState>, //<egui::DroppedFile>,
+    #[serde(skip)]
+    rx: Receiver<sl::SLState>, //<Option<String>>,
 }
 
-impl Default for BrowserBNSL {
+impl Default for BrowserBNSL{
     fn default() -> Self {
+        let (tx, rx) = channel();
         Self {
             // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
-            dropped_files: Default::default(),
+            //dropped_files: Default::default(),
+            sl_states: Default::default(),
+            busy: false,
+            tx,
+            rx,
         }
     }
 }
@@ -70,40 +81,121 @@ impl BrowserBNSL {
 
         // Collect dropped files:
         if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
-            self.dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+            for dropped_file in ctx.input(|i| i.to_owned().raw.take()).dropped_files {
+                self.sl_states.push(sl::SLState::Queued(dropped_file))
+            };
+            // self.dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         }
 
         // Show dropped files (if any):
-        if !self.dropped_files.is_empty() {
+        if !self.sl_states.is_empty() {
             let mut open = true;
             egui::Window::new("Data")
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    for file in &self.dropped_files {
-                        let mut info = if let Some(path) = &file.path {
-                            path.display().to_string()
-                        } else if !file.name.is_empty() {
-                            file.name.clone()
-                        } else {
-                            "???".to_owned()
+                    //for state_vec in vec![&self.sl_queue, &self.sl_states]{
+                    for sl_state in &self.sl_states {
+                        let mut info = match sl_state {
+                            sl::SLState::Queued(file) => "Queued".to_owned(),
+                            // sl::SLState::Waiting => "SL starting".to_owned(),
+                            sl::SLState::Running(start_time) => format!("SL running for {:?}", start_time.elapsed()).to_owned(),
+                            sl::SLState::Done(duration, res) => format!("SL finished in {:?}, modelstring: {:?}", duration, res).to_owned(),
                         };
-                        let mut csv_info = String::new();
-                        if let Some(bytes) = &file.bytes { // .bytes in browser, open from path if native
-                            info += &format!(" ({} bytes)", bytes.len());
-                            let mut rdr = csv::Reader::from_reader(std::str::from_utf8(bytes).unwrap().as_bytes());
-                            csv_info += &format!("vars: {:?}", rdr.headers().unwrap());
-                        } else if let Some(path) = &file.path {
-                            let mut rdr = csv::Reader::from_path(path);
-                        }
                         ui.label(info);
-                        ui.label(csv_info);
                     }
+
+                    #[cfg(not(target_arch = "wasm32"))] // not browser so we can use threads
+                    for i in 0..(self.sl_states.len()) {
+                        match &self.sl_states[i] {
+                            sl::SLState::Queued(file) => {
+                                if !self.busy {
+                                    //self.sl_states[i] = sl::SLState::Running(Instant::now());
+                                    let tx_clone = self.tx.clone();
+                                    let f = file.clone();
+                                    thread::spawn(move || {
+                                        //tx_clone.send(sl::sl_wrapper(file.clone())); //sl::SLState::Queued(file)));
+                                        let res = sl::sl_wrapper(f);
+                                        tx_clone.send(res).unwrap();
+                                        //tx_clone.send(sl::sl_wrapper(f)).unwrap();
+                                    });
+                                    self.sl_states[i] = sl::SLState::Running(Instant::now());
+                                    self.busy = true;
+                                    ctx.request_repaint();
+                                } else {
+                                    ctx.request_repaint();
+                                }
+                            },
+                            // sl::SLState::Waiting => {},
+                            sl::SLState::Running(_) => {
+                                if let Ok(done_state) = self.rx.try_recv() {
+                                    self.sl_states[i] = done_state;
+                                    self.busy = false;
+                                }
+                                ctx.request_repaint();
+                            },
+                            sl::SLState::Done(_, _) => {},
+                        }
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    for i in 0..(self.sl_states.len()) {
+                        match &self.sl_states[i] {
+                            sl::SLState::Queued(file) => {
+                                if !self.busy {
+                                    self.sl_states[i] = sl::sl_wrapper(file.clone());
+                                }
+                            },
+                            // sl::SLState::Waiting => {},
+                            sl::SLState::Running(_) => {// doesn't happen
+                            },
+                            sl::SLState::Done(_, _) => {},
+                        }
+                    }
+
+
+                    // for file in &self.dropped_files {
+                    //     let mut info = if let Some(path) = &file.path {
+                    //         path.display().to_string()
+                    //     } else if !file.name.is_empty() {
+                    //         file.name.clone()
+                    //     } else {
+                    //         "???".to_owned()
+                    //     };
+                    //     // let mut csv_info = String::new();
+                    //     if let Some(bytes) = &file.bytes { // .bytes in browser, open from path if native
+                    //         info += &format!(" ({} bytes)", bytes.len());
+                    //     //     let rdr = csv::Reader::from_reader(std::str::from_utf8(bytes).unwrap().as_bytes());
+                    //     //     // csv_info += &format!("vars: {:?}", rdr.headers().unwrap());
+                    //     //     let mut score_table = sl::ScoreTable::from_csv_reader(rdr);
+                    //     //     let modelstring = score_table.compute(false, true);
+                    //     //     if let Some(modelstr) = modelstring {
+                    //     //         csv_info += &modelstr;
+                    //     //     }
+                    //     // } else if let Some(path) = &file.path {
+                    //     //     // let mut rdr = csv::Reader::from_path(path).unwrap();
+                    //     //     // csv_info += &format!("vars: {:?}", rdr.headers().unwrap());
+                    //     //     // let mut score_table = sl::ScoreTable::from_csv(std::fs::File::open(path).unwrap());
+                    //     //     let mut score_table = sl::ScoreTable::from_csv_reader(csv::Reader::from_path(path).unwrap());
+                    //     //     let modelstring = score_table.compute(false, true);
+                    //     //     if let Some(modelstr) = modelstring {
+                    //     //         csv_info += &modelstr;
+                    //     //     }
+                    //     }
+                    //     ui.label(info);
+                    //     // ui.label(csv_info);
+                    // }
                 });
             if !open {
-                self.dropped_files.clear();
+                self.sl_states.clear();
             }
         }
     }
+
+    fn sl_window(&mut self, ctx: &egui::Context) {
+        unimplemented!()
+    }
+
+
 }
 
 impl eframe::App for BrowserBNSL {
@@ -175,14 +267,6 @@ impl eframe::App for BrowserBNSL {
         //     egui::warn_if_debug_build(ui);
         // });
 
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
     }
     
 }
