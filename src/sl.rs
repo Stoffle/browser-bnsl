@@ -3,24 +3,28 @@ use crate::scoring::{Score, VariableMap, ScoreLookup};
 use csv;
 use itertools::Itertools;
 use std::{fs::File, rc::Rc};
-use std::time::{Duration, Instant};
+//use std::time::{Duration, Instant};
 use egui::DroppedFile;
-
+use chrono::prelude::*;
 
 pub enum SLState {
     Queued(egui::DroppedFile),
     // Waiting,
-    Running(Instant),
-    Done(Duration, Option<String>),
+    // Running(Instant),
+    Running(DateTime<Utc>),
+    // Done(Duration, Option<String>),
+    Done(chrono::Duration, Option<String>),
 }
 
 #[cfg(not(target_arch = "wasm32"))] // not browser, so should have file path
 pub fn sl_wrapper(file: DroppedFile) -> SLState {
     //if let Some(bytes) =  { // .bytes in browser, open from path if native
         let mut score_table = ScoreTable::from_csv_reader(csv::Reader::from_path(file.path.unwrap()).unwrap());
-        let start = Instant::now();
+        // let start = Instant::now();
+        let start = Utc::now();
         let modelstring = score_table.compute(false, true);
-        return SLState::Done(start.elapsed(), modelstring)
+        let duration = Utc::now() - start;
+        return SLState::Done(duration, modelstring)
     // } else {
     //     return SLState::Done(, None)
     // }
@@ -31,9 +35,10 @@ pub fn sl_wrapper(file: DroppedFile) -> SLState {
     let binding = file.bytes.unwrap();
     let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
     let mut score_table = ScoreTable::from_csv_reader(rdr);
-    let start = Instant::now();
+    let start = Utc::now();
     let modelstring = score_table.compute(false, true);
-    return SLState::Done(start.elapsed(), modelstring)
+    let duration = Utc::now() - start;
+    return SLState::Done(duration, modelstring)
     // if let Some(path) = &file.path {
     //     let mut score_table = ScoreTable::from_csv(std::fs::File::open(path).unwrap());
     //     return Some(score_table.compute(false, true))

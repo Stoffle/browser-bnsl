@@ -19,6 +19,7 @@ eframe = { version = "0.21.0", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 csv = "1.2.1"
 itertools = "0.10.5"
+chrono = { version = "0.4.24", features = ["serde", "wasmbind"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

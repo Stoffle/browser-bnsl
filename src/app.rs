@@ -1,8 +1,8 @@
 use csv;
 use crate::sl;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::{Duration, Instant};
 use std::thread;
+use chrono::prelude::*;
 
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -58,8 +58,8 @@ impl BrowserBNSL {
             for file in &ctx.input(|x| x.raw.hovered_files.clone()) {
                 if let Some(path) = &file.path {
                     text += &format!("\n{}", path.display());
-                } else if !file.mime.is_empty() {
-                    text += &format!("\n{}", file.mime);
+                // } else if !file.mime.is_empty() {
+                //     text += &format!("\n{}", file.mime);
                 } else {
                     text += "\n???";
                 }
@@ -98,7 +98,7 @@ impl BrowserBNSL {
                         let mut info = match sl_state {
                             sl::SLState::Queued(file) => "Queued".to_owned(),
                             // sl::SLState::Waiting => "SL starting".to_owned(),
-                            sl::SLState::Running(start_time) => format!("SL running for {:?}", start_time.elapsed()).to_owned(),
+                            sl::SLState::Running(start_time) => format!("SL running for {:?}", Utc::now() - *start_time).to_owned(),
                             sl::SLState::Done(duration, res) => format!("SL finished in {:?}, modelstring: {:?}", duration, res).to_owned(),
                         };
                         ui.label(info);
@@ -118,7 +118,7 @@ impl BrowserBNSL {
                                         tx_clone.send(res).unwrap();
                                         //tx_clone.send(sl::sl_wrapper(f)).unwrap();
                                     });
-                                    self.sl_states[i] = sl::SLState::Running(Instant::now());
+                                    self.sl_states[i] = sl::SLState::Running(Utc::now());
                                     self.busy = true;
                                     ctx.request_repaint();
                                 } else {
@@ -143,6 +143,7 @@ impl BrowserBNSL {
                             sl::SLState::Queued(file) => {
                                 if !self.busy {
                                     self.sl_states[i] = sl::sl_wrapper(file.clone());
+                                    ctx.request_repaint();
                                 }
                             },
                             // sl::SLState::Waiting => {},
