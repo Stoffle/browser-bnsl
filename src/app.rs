@@ -3,6 +3,7 @@ use crate::sl;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use chrono::prelude::*;
+use egui_extras::{Column, TableBuilder};
 
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -15,6 +16,12 @@ pub struct BrowserBNSL {
     //dropped_files: Vec<egui::DroppedFile>,
     #[serde(skip)]
     busy: bool,
+    #[serde(skip)]
+    run_switch: bool,
+    #[serde(skip)]
+    learn_switch: bool,
+    #[serde(skip)]
+    prune_switch: bool,
     #[serde(skip)]
     tx: Sender<sl::SLState>, //<egui::DroppedFile>,
     #[serde(skip)]
@@ -29,6 +36,9 @@ impl Default for BrowserBNSL{
             //dropped_files: Default::default(),
             sl_states: Default::default(),
             busy: false,
+            run_switch: false,
+            learn_switch: true,
+            prune_switch: true,
             tx,
             rx,
         }
@@ -82,7 +92,7 @@ impl BrowserBNSL {
         // Collect dropped files:
         if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
             for dropped_file in ctx.input(|i| i.to_owned().raw.take()).dropped_files {
-                self.sl_states.push(sl::SLState::Queued(dropped_file))
+                self.sl_states.push(sl::SLState::Queued(sl::DataInfo::from_file(dropped_file.clone()), dropped_file))
             };
             // self.dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         }
@@ -93,32 +103,154 @@ impl BrowserBNSL {
             egui::Window::new("Data")
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    //for state_vec in vec![&self.sl_queue, &self.sl_states]{
-                    for sl_state in &self.sl_states {
-                        let mut info = match sl_state {
-                            sl::SLState::Queued(file) => "Queued".to_owned(),
-                            // sl::SLState::Waiting => "SL starting".to_owned(),
-                            sl::SLState::Running(start_time) => format!("SL running for {:?}", Utc::now() - *start_time).to_owned(),
-                            sl::SLState::Done(duration, res) => format!("SL finished in {:?}, modelstring: {:?}", duration, res).to_owned(),
+                    #[cfg(target_arch = "wasm32")]
+                    self.do_work_wasm(ctx);
+                    // ui.checkbox(&mut self.run_switch, "Running");
+                    ui.checkbox(&mut self.prune_switch, "Enable pruning");
+                    ui.checkbox(&mut self.learn_switch, "Learn structure");
+                    if self.run_switch {
+                        // Running, so stop button:
+                        if ui.button("⏸").clicked() {
+                            self.run_switch = false;
                         };
-                        ui.label(info);
+                    } else {
+                        // Paused, so play button:
+                        if ui.button("Run").clicked() {
+                            self.run_switch = true;
+                        };
                     }
+                    //for state_vec in vec![&self.sl_queue, &self.sl_states]{
 
+                    let mut table = TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        //.column(Column::auto_with_initial_suggestion(10.0))
+                        .column(Column::auto())
+                        .column(Column::auto())
+                        .column(Column::auto())
+                        .column(Column::auto())
+                        .column(Column::auto().at_most(ctx.available_rect().width()).clip(true))
+                        //.column(Column::initial(100.0).range(40.0..=300.0))
+                        //.column(Column::initial(100.0).at_least(40.0).clip(true))
+                        //.column(Column::remainder())
+                        .min_scrolled_height(0.0);
+                    table
+                        .header(20.0, |mut header| {
+                            header.col(|ui| {
+                                ui.strong("File");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Variables");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Samples");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Running time");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Result");
+                            });
+                        })
+                        .body(|mut body|  {
+                            body.rows(10.0, self.sl_states.len(), |row_index, mut row| {
+                                let state = self.sl_states.get(row_index).unwrap();
+                                let data_info: sl::DataInfo = match state {
+                                    sl::SLState::Queued(data_info, _) => {data_info.clone()}
+                                    sl::SLState::Running(data_info, _, _) => {data_info.clone()}
+                                    sl::SLState::Done(data_info, _, _) => {data_info.clone()}
+                                };
+                                row.col(|ui| {
+                                    ui.label(data_info.name);
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data_info.n_vars));
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", data_info.n_samples));
+                                });
+                                match state {
+                                    sl::SLState::Queued(_, _) => {
+                                        row.col(|ui| {
+                                            ui.label("Queued".to_owned());
+                                        });
+                                    }
+                                    // sl::SLState::Waiting => "SL starting".to_owned(),
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    sl::SLState::Running(_, _, start_time) => {
+                                        row.col(|ui| {
+                                            ui.label(format!("Running for {}", format_duration(Utc::now() - *start_time)).to_owned());
+                                        });
+                                        row.col(|ui| {
+                                            ui.label("".to_owned());
+                                        });
+                                    }
+                                    #[cfg(target_arch = "wasm32")]
+                                    sl::SLState::Running(_, _, start_time) => {
+                                        row.col(|ui| {
+                                            ui.label("Running...".to_owned());
+                                        });
+                                        row.col(|ui| {
+                                            ui.label("".to_owned());
+                                        });
+                                    }
+                                    sl::SLState::Done(_, duration, res) => {
+                                        row.col(|ui| {
+                                            ui.label(format_duration(duration.clone()));
+                                        });
+                                        if let Some(modelstring) = res {
+                                            row.col(|ui| {
+                                                ui.label(modelstring.clone());
+                                            });
+                                        } else {
+                                            row.col(|ui| {
+                                                ui.label("".to_owned());
+                                            });
+                                        }
+                                    }
+                                }
+                            });
+                        });
+
+                    
+                    // for sl_state in &self.sl_states {
+                    //     let info = match sl_state {
+                    //         sl::SLState::Queued(data_info, _) => "Queued".to_owned(),
+                    //         // sl::SLState::Waiting => "SL starting".to_owned(),
+                    //         #[cfg(not(target_arch = "wasm32"))]
+                    //         sl::SLState::Running(data_info, _, start_time) => format!("Running for {}", format_duration(Utc::now() - *start_time)).to_owned(),
+                    //         #[cfg(target_arch = "wasm32")]
+                    //         sl::SLState::Running(data_info, _, start_time) => "Running...".to_string(),
+                    //         sl::SLState::Done(data_info, duration, res) => {
+                    //             if let Some(modelstring) = res {
+                    //                 format!("SL finished in {}, modelstring: {:?}", format_duration(duration.clone()), modelstring).to_owned()
+                    //             } else {
+                    //                 format!("Scoring finished in {}", format_duration(duration.clone()))
+                    //             }
+                    //         }
+                    //     };
+                    //     ui.label(info);
+                    //     ctx.request_repaint();
+                    // }
                     #[cfg(not(target_arch = "wasm32"))] // not browser so we can use threads
                     for i in 0..(self.sl_states.len()) {
                         match &self.sl_states[i] {
-                            sl::SLState::Queued(file) => {
-                                if !self.busy {
+                            sl::SLState::Queued(data_info, file) => {
+                                if !self.busy & self.run_switch {
                                     //self.sl_states[i] = sl::SLState::Running(Instant::now());
                                     let tx_clone = self.tx.clone();
                                     let f = file.clone();
+                                    let data_info_clone = data_info.clone();
+                                    let p_switch = self.prune_switch.clone();
+                                    let l_switch = self.learn_switch.clone();
                                     thread::spawn(move || {
                                         //tx_clone.send(sl::sl_wrapper(file.clone())); //sl::SLState::Queued(file)));
-                                        let res = sl::sl_wrapper(f);
+                                        let res = sl::sl_wrapper(data_info_clone, f, p_switch, l_switch);
                                         tx_clone.send(res).unwrap();
                                         //tx_clone.send(sl::sl_wrapper(f)).unwrap();
                                     });
-                                    self.sl_states[i] = sl::SLState::Running(Utc::now());
+                                    self.sl_states[i] = sl::SLState::Running(data_info.clone(), file.clone(), Utc::now());
                                     self.busy = true;
                                     ctx.request_repaint();
                                 } else {
@@ -126,32 +258,18 @@ impl BrowserBNSL {
                                 }
                             },
                             // sl::SLState::Waiting => {},
-                            sl::SLState::Running(_) => {
+                            sl::SLState::Running(..) => {
                                 if let Ok(done_state) = self.rx.try_recv() {
                                     self.sl_states[i] = done_state;
                                     self.busy = false;
                                 }
                                 ctx.request_repaint();
                             },
-                            sl::SLState::Done(_, _) => {},
+                            sl::SLState::Done(..) => {},
                         }
                     }
 
-                    #[cfg(target_arch = "wasm32")]
-                    for i in 0..(self.sl_states.len()) {
-                        match &self.sl_states[i] {
-                            sl::SLState::Queued(file) => {
-                                if !self.busy {
-                                    self.sl_states[i] = sl::sl_wrapper(file.clone());
-                                    ctx.request_repaint();
-                                }
-                            },
-                            // sl::SLState::Waiting => {},
-                            sl::SLState::Running(_) => {// doesn't happen
-                            },
-                            sl::SLState::Done(_, _) => {},
-                        }
-                    }
+                    
 
 
                     // for file in &self.dropped_files {
@@ -188,6 +306,29 @@ impl BrowserBNSL {
                 });
             if !open {
                 self.sl_states.clear();
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn do_work_wasm(&mut self, ctx: &egui::Context) {
+        self.busy = false;
+        //#[cfg(target_arch = "wasm32")]
+        for i in 0..(self.sl_states.len()) {
+            match &self.sl_states[i] {
+                sl::SLState::Queued(data_info, file) => {
+                    if !self.busy & self.run_switch{
+                    self.sl_states[i] = sl::SLState::Running(data_info.clone(), file.clone(), Utc::now());
+                    self.busy = true;
+                    }
+                },
+                // sl::SLState::Waiting => {},
+                sl::SLState::Running(data_info, file, _) => {// actually start running, frame after taking from queue
+                if !self.busy & self.run_switch{
+                    self.sl_states[i] = sl::sl_wrapper(data_info.clone(), file.clone(), self.prune_switch, self.learn_switch);
+                    ctx.request_repaint();
+                }
+                },
+                sl::SLState::Done(..) => {},
             }
         }
     }
@@ -270,4 +411,8 @@ impl eframe::App for BrowserBNSL {
 
     }
     
+}
+
+fn format_duration(duration: chrono::Duration) -> String {
+    return format!("{:03}s", duration.num_milliseconds() as f64/1000f64)
 }

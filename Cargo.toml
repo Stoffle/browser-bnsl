@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 csv = "1.2.1"
 itertools = "0.10.5"
 chrono = { version = "0.4.24", features = ["serde", "wasmbind"] }
+egui_extras = "0.21.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -33,7 +34,8 @@ wasm-bindgen-futures = "0.4"
 
 
 [profile.release]
-opt-level = 2 # fast and small wasm
+# opt-level = 2 # fast and small wasm
+opt-level = 3 # faster native, wasm is still fine
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
@@ -49,3 +51,4 @@ opt-level = 2
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
+

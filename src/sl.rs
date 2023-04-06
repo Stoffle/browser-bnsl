@@ -7,38 +7,72 @@ use std::{fs::File, rc::Rc};
 use egui::DroppedFile;
 use chrono::prelude::*;
 
+#[derive(Clone)]
+pub struct DataInfo {
+    pub name: String,
+    pub n_vars: usize,
+    pub n_samples: usize
+}
+
+impl DataInfo {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_file(file: egui::DroppedFile) -> DataInfo {
+        let name = file.path.clone().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        let rdr = csv::Reader::from_path(file.path.unwrap()).unwrap();
+        let (n_vars, n_samples) = csv_info(rdr);
+        return DataInfo { name: name, n_vars: n_vars, n_samples: n_samples }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_file(file: egui::DroppedFile) -> DataInfo {
+        let name = file.name.clone();
+        let binding = file.bytes.unwrap();
+        let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
+        let (n_vars, n_samples) = csv_info(rdr);
+        return DataInfo { name: name, n_vars: n_vars, n_samples: n_samples }
+    }
+}
+
+fn csv_info<R: std::io::Read>(mut rdr: csv::Reader<R>) -> (usize, usize) {
+    // returns (n_vars, n_samples)
+    let n_vars = rdr.headers().unwrap().len();
+    let n_samples = rdr.records().count();
+    (n_vars, n_samples)
+}
+
+#[derive(Clone)]
 pub enum SLState {
-    Queued(egui::DroppedFile),
+    Queued(DataInfo, egui::DroppedFile),
     // Waiting,
     // Running(Instant),
-    Running(DateTime<Utc>),
+    Running(DataInfo, egui::DroppedFile, DateTime<Utc>),
     // Done(Duration, Option<String>),
-    Done(chrono::Duration, Option<String>),
+    Done(DataInfo, chrono::Duration, Option<String>),
 }
 
 #[cfg(not(target_arch = "wasm32"))] // not browser, so should have file path
-pub fn sl_wrapper(file: DroppedFile) -> SLState {
+pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> SLState {
     //if let Some(bytes) =  { // .bytes in browser, open from path if native
         let mut score_table = ScoreTable::from_csv_reader(csv::Reader::from_path(file.path.unwrap()).unwrap());
         // let start = Instant::now();
         let start = Utc::now();
-        let modelstring = score_table.compute(false, true);
+        let modelstring = score_table.compute(pruning, false, learn);
         let duration = Utc::now() - start;
-        return SLState::Done(duration, modelstring)
+        return SLState::Done(data_info, duration, modelstring)
     // } else {
     //     return SLState::Done(, None)
     // }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn sl_wrapper(file: DroppedFile) -> SLState {
+pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> SLState {
     let binding = file.bytes.unwrap();
     let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
     let mut score_table = ScoreTable::from_csv_reader(rdr);
     let start = Utc::now();
-    let modelstring = score_table.compute(false, true);
+    let modelstring = score_table.compute(pruning, false, learn);
     let duration = Utc::now() - start;
-    return SLState::Done(duration, modelstring)
+    return SLState::Done(data_info, duration, modelstring)
     // if let Some(path) = &file.path {
     //     let mut score_table = ScoreTable::from_csv(std::fs::File::open(path).unwrap());
     //     return Some(score_table.compute(false, true))
@@ -220,16 +254,22 @@ impl VectorSet {
         variables: Vec<usize>,
         entropies: &mut Vec<f64>,
         scores: &mut Vec<Vec<(f64, usize)>>,
-        entropy_required_flags: &mut Vec<bool>,
         counter: &mut usize,
+        output_queries: bool,
+        pruning: bool,
         path_graph: &mut Option<PathGraph>,
-        output_queries: bool
+        entropy_required_flags: &mut Vec<bool>,
     ) {
         // no need to return children, we want them to be owned by the function
         // check this entropy wasn't pruned
         // if it was, skip to filling in scores
         // change self to represent new set
-        let entropy_required = entropy_required_flags[self.index_set.index];
+        let entropy_required = if !pruning {
+            true
+        } else {
+            entropy_required_flags[self.index_set.index]
+        };
+
         if entropy_required {
             entropies[self.index_set.index] = self.entropy.unwrap_or_else(|| panic!("entropy expected but not computed: {:#?}", self.index_set));
         };
@@ -275,7 +315,7 @@ impl VectorSet {
         }
         for var in variables {
             let vector_set = self.add_variable(var, entropy_required);
-            vector_set.compute_recursive(data, logn, next_generation_vars.clone(), entropies, scores, entropy_required_flags, counter, path_graph, output_queries);
+            vector_set.compute_recursive(data, logn, next_generation_vars.clone(), entropies, scores, counter, output_queries, pruning, path_graph, entropy_required_flags);
             next_generation_vars.push(var);
         }
         // fill in scores;
@@ -356,7 +396,7 @@ impl ScoreTable {
         }
     }
 
-    pub fn compute(&mut self, output_queries: bool, learn_structure: bool) -> Option<String> {
+    pub fn compute(&mut self, pruning: bool, output_queries: bool, learn_structure: bool) -> Option<String> {
         let vector_set = VectorSet::from_data(Rc::new(self.data.clone()));
         // println!("initial vector_set {:#?}", vector_set);
         let variables: Vec<usize> = (0..self.data.len()).collect();
@@ -368,7 +408,7 @@ impl ScoreTable {
         };
 
         let logn: f64 = (self.data[0].len() as f64).log2();
-        vector_set.compute_recursive(&self.data, logn, variables, &mut self.entropies, &mut self.scores, &mut self.entropy_required_flags, &mut counter, &mut self.path_graph, output_queries);
+        vector_set.compute_recursive(&self.data, logn, variables, &mut self.entropies, &mut self.scores, &mut counter, output_queries, pruning, &mut self.path_graph, &mut self.entropy_required_flags);
 
         // if let Some(pg) = &self.path_graph {
         //     // println!("{:#?}", pg.nodes);
