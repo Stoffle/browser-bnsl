@@ -92,7 +92,9 @@ impl BrowserBNSL {
         // Collect dropped files:
         if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
             for dropped_file in ctx.input(|i| i.to_owned().raw.take()).dropped_files {
-                self.sl_states.push(sl::SLState::Queued(sl::DataInfo::from_file(dropped_file.clone()), dropped_file))
+                if let Some(data_info) = sl::DataInfo::from_file(dropped_file.clone()){
+                    self.sl_states.push(sl::SLState::Queued(data_info, dropped_file))
+                }
             };
             // self.dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         }
@@ -156,11 +158,7 @@ impl BrowserBNSL {
                         .body(|mut body|  {
                             body.rows(10.0, self.sl_states.len(), |row_index, mut row| {
                                 let state = self.sl_states.get(row_index).unwrap();
-                                let data_info: sl::DataInfo = match state {
-                                    sl::SLState::Queued(data_info, _) => {data_info.clone()}
-                                    sl::SLState::Running(data_info, _, _) => {data_info.clone()}
-                                    sl::SLState::Done(data_info, _, _) => {data_info.clone()}
-                                };
+                                let data_info: sl::DataInfo = state.info();
                                 row.col(|ui| {
                                     ui.label(data_info.name);
                                 });
@@ -209,6 +207,11 @@ impl BrowserBNSL {
                                             });
                                         }
                                     }
+                                    sl::SLState::Failed(..) => {
+                                        row.col(|ui| {
+                                            ui.label("Run failed".to_owned());
+                                        });
+                                    }
                                 }
                             });
                         });
@@ -246,8 +249,9 @@ impl BrowserBNSL {
                                     let l_switch = self.learn_switch.clone();
                                     thread::spawn(move || {
                                         //tx_clone.send(sl::sl_wrapper(file.clone())); //sl::SLState::Queued(file)));
-                                        let res = sl::sl_wrapper(data_info_clone, f, p_switch, l_switch);
-                                        tx_clone.send(res).unwrap();
+                                        if let Some(res) = sl::sl_wrapper(data_info_clone.clone(), f, p_switch, l_switch) {
+                                            tx_clone.send(res)
+                                        } else {tx_clone.send(sl::SLState::Failed(data_info_clone))}
                                         //tx_clone.send(sl::sl_wrapper(f)).unwrap();
                                     });
                                     self.sl_states[i] = sl::SLState::Running(data_info.clone(), file.clone(), Utc::now());
@@ -266,6 +270,7 @@ impl BrowserBNSL {
                                 ctx.request_repaint();
                             },
                             sl::SLState::Done(..) => {},
+                            sl::SLState::Failed(..) => {},
                         }
                     }
 
@@ -324,11 +329,16 @@ impl BrowserBNSL {
                 // sl::SLState::Waiting => {},
                 sl::SLState::Running(data_info, file, _) => {// actually start running, frame after taking from queue
                 if !self.busy & self.run_switch{
-                    self.sl_states[i] = sl::sl_wrapper(data_info.clone(), file.clone(), self.prune_switch, self.learn_switch);
+                    self.sl_states[i] = {
+                        if let Some(res) = sl::sl_wrapper(data_info.clone(), file.clone(), self.prune_switch, self.learn_switch){
+                            res
+                        } else {sl::SLState::Failed(data_info.clone())}
+                    };
                     ctx.request_repaint();
                 }
                 },
                 sl::SLState::Done(..) => {},
+                sl::SLState::Failed(..) => {},
             }
         }
     }

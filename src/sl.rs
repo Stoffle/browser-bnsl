@@ -16,28 +16,34 @@ pub struct DataInfo {
 
 impl DataInfo {
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_file(file: egui::DroppedFile) -> DataInfo {
-        let name = file.path.clone().unwrap().file_name().unwrap().to_string_lossy().to_string();
-        let rdr = csv::Reader::from_path(file.path.unwrap()).unwrap();
-        let (n_vars, n_samples) = csv_info(rdr);
-        return DataInfo { name: name, n_vars: n_vars, n_samples: n_samples }
+    pub fn from_file(file: egui::DroppedFile) -> Option<DataInfo> {
+        let path = file.path.clone();        
+        let name = path?.file_name()?.to_string_lossy().to_string();
+        if let Ok(rdr) = csv::Reader::from_path(file.path?) {
+            let (n_vars, n_samples) = csv_info(rdr)?;
+            return Some(DataInfo { name: name, n_vars: n_vars, n_samples: n_samples })
+        } else {return None}
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn from_file(file: egui::DroppedFile) -> DataInfo {
+    pub fn from_file(file: egui::DroppedFile) -> Option<DataInfo> {
         let name = file.name.clone();
-        let binding = file.bytes.unwrap();
+        let binding = file.bytes?;
         let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
-        let (n_vars, n_samples) = csv_info(rdr);
-        return DataInfo { name: name, n_vars: n_vars, n_samples: n_samples }
+        let (n_vars, n_samples) = csv_info(rdr)?;
+        return Some(DataInfo { name: name, n_vars: n_vars, n_samples: n_samples })
     }
 }
 
-fn csv_info<R: std::io::Read>(mut rdr: csv::Reader<R>) -> (usize, usize) {
+fn csv_info<R: std::io::Read>(mut rdr: csv::Reader<R>) -> Option<(usize, usize)> {
     // returns (n_vars, n_samples)
-    let n_vars = rdr.headers().unwrap().len();
+    if rdr.headers().is_err() {return None;}
+    let n_vars = (if let Ok(headers) = rdr.headers() {
+        Some(headers.len())
+    } else {None})?; // hacky way to get rid of the u-word
     let n_samples = rdr.records().count();
-    (n_vars, n_samples)
+    if (n_vars <= 1) || (n_samples <= 1) {return None;} // some non-csv files get read in, this should catch most
+    Some((n_vars, n_samples))
 }
 
 #[derive(Clone)]
@@ -48,31 +54,48 @@ pub enum SLState {
     Running(DataInfo, egui::DroppedFile, DateTime<Utc>),
     // Done(Duration, Option<String>),
     Done(DataInfo, chrono::Duration, Option<String>),
+    Failed(DataInfo),
+}
+impl SLState {
+    pub fn info(&self) -> DataInfo {
+        match self {
+            SLState::Queued (data_info, ..) => {data_info.clone()}
+            SLState::Running(data_info, ..) => {data_info.clone()}
+            SLState::Done   (data_info, ..) => {data_info.clone()}
+            SLState::Failed (data_info, ..) => {data_info.clone()}
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))] // not browser, so should have file path
-pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> SLState {
+pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> Option<SLState> {
     //if let Some(bytes) =  { // .bytes in browser, open from path if native
-        let mut score_table = ScoreTable::from_csv_reader(csv::Reader::from_path(file.path.unwrap()).unwrap());
+        if let Ok(rdr) = csv::Reader::from_path(file.path?){
+            let mut score_table = ScoreTable::from_csv_reader(rdr);
+            let start = Utc::now();
+            let modelstring = score_table.compute(pruning, false, learn);
+            let duration = Utc::now() - start;
+            return Some(SLState::Done(data_info, duration, modelstring))
+        } else {None}
+        // let mut score_table = ;
         // let start = Instant::now();
-        let start = Utc::now();
-        let modelstring = score_table.compute(pruning, false, learn);
-        let duration = Utc::now() - start;
-        return SLState::Done(data_info, duration, modelstring)
     // } else {
     //     return SLState::Done(, None)
     // }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> SLState {
+pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: bool) -> Option<SLState> {
     let binding = file.bytes.unwrap();
-    let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
-    let mut score_table = ScoreTable::from_csv_reader(rdr);
-    let start = Utc::now();
-    let modelstring = score_table.compute(pruning, false, learn);
-    let duration = Utc::now() - start;
-    return SLState::Done(data_info, duration, modelstring)
+    if let Ok(s) = std::str::from_utf8(&binding) {
+        let rdr = csv::Reader::from_reader(s.as_bytes());
+        let mut score_table = ScoreTable::from_csv_reader(rdr);
+        let start = Utc::now();
+        let modelstring = score_table.compute(pruning, false, learn);
+        let duration = Utc::now() - start;
+        return Some(SLState::Done(data_info, duration, modelstring))
+    } else {return None}
+    // let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
     // if let Some(path) = &file.path {
     //     let mut score_table = ScoreTable::from_csv(std::fs::File::open(path).unwrap());
     //     return Some(score_table.compute(false, true))
@@ -275,7 +298,7 @@ impl VectorSet {
         };
         // compute all scores which use last computed entropy (self.entropy):
         let n = self.data_dimensions.1 as f64;
-        for (var, score_idx, entropy_idx) in self.index_set.previous_scores() {          // TODO: check for optimal subset score
+        for (var, score_idx, entropy_idx) in self.index_set.previous_scores() {
             let mut score = f64::MIN;
             if entropy_required {
                 let levels = self.levels[var];
