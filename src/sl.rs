@@ -2,6 +2,8 @@ use crate::int_utils::IndexSet;
 use crate::scoring::{Score, VariableMap, ScoreLookup};
 use csv;
 use itertools::Itertools;
+use std::cmp::min;
+use std::collections::VecDeque;
 use std::{fs::File, rc::Rc};
 //use std::time::{Duration, Instant};
 use egui::DroppedFile;
@@ -95,13 +97,6 @@ pub fn sl_wrapper(data_info: DataInfo, file: DroppedFile, pruning: bool, learn: 
         let duration = Utc::now() - start;
         return Some(SLState::Done(data_info, duration, modelstring))
     } else {return None}
-    // let rdr = csv::Reader::from_reader(std::str::from_utf8(&binding).unwrap().as_bytes());
-    // if let Some(path) = &file.path {
-    //     let mut score_table = ScoreTable::from_csv(std::fs::File::open(path).unwrap());
-    //     return Some(score_table.compute(false, true))
-    // } else {
-    //     return None
-    // }
 }
 
 
@@ -121,6 +116,14 @@ fn transpose<T>(mut v: Vec<Vec<T>>) -> Vec<Vec<T>> {
 }
 
 #[derive(Debug)]
+struct QueueItem {
+    data: Rc<VectorSet>,
+    added_var: usize,
+    descendant_vars: Vec<usize>,
+    pruned: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct VectorSet {
     data: Rc<Vec<Vec<u8>>>, // Data encoded as u8, array[variable_index][row_index]
     index_vec: Vec<usize>, // Vec of indices, split by configuration of variables in index_set (splits, sizes)
@@ -258,7 +261,7 @@ impl VectorSet {
         // println!("splits: {:#?}, sizes: {:#?}, data: {:#?}", new_spilts, new_sizes, new_data);
         //self.new_from_self(new_data, new_spilts, new_sizes, self.index_set.add_variable(variable))
         VectorSet {
-            data: self.data.clone(),  // TODO: don't copy data, pass into function?
+            data: Rc::clone(&self.data),
             index_vec: new_index_vec,
             data_dimensions: self.data_dimensions,      // |
             levels: self.levels.clone(),                // | TODO: remove these copies? can just be argument to compute_recursive()
@@ -281,26 +284,20 @@ impl VectorSet {
         output_queries: bool,
         pruning: bool,
         path_graph: &mut Option<PathGraph>,
-        entropy_required_flags: &mut Vec<bool>,
     ) {
         // no need to return children, we want them to be owned by the function
         // check this entropy wasn't pruned
         // if it was, skip to filling in scores
         // change self to represent new set
-        let entropy_required = if !pruning {
-            true
-        } else {
-            entropy_required_flags[self.index_set.index]
-        };
 
-        if entropy_required {
+        if !pruning {
             entropies[self.index_set.index] = self.entropy.unwrap_or_else(|| panic!("entropy expected but not computed: {:#?}", self.index_set));
         };
         // compute all scores which use last computed entropy (self.entropy):
         let n = self.data_dimensions.1 as f64;
         for (var, score_idx, entropy_idx) in self.index_set.previous_scores() {
             let mut score = f64::MIN;
-            if entropy_required {
+            if !pruning {
                 let levels = self.levels[var];
                 let parent_levels: usize = entropy_idx.vars.iter().map(|x| self.levels[*x]).product();
                 let penalty: f64 = 0.5 * logn * ((levels - 1) * parent_levels) as f64; //(self.cardinality / levels) as f64 * levels as f64;
@@ -314,31 +311,28 @@ impl VectorSet {
                     index = prev_parset_idx;
                 }
             }
-            if index == entropy_idx.index {
-                // score improved so score supersets' entropies can't be pruned
-                // so, set flag for the superset entropy and anything on the recursion path to it
-                self.index_set.remove_variable(var).require_parent_supersets(var, (0..self.data_dimensions.0).collect_vec(), entropy_required_flags)
-            }
+            // if index == entropy_idx.index {
+            //     // score improved so score supersets' entropies can't be pruned
+            //     // so, set flag for the superset entropy and anything on the recursion path to it
+            //     self.index_set.remove_variable(var).require_parent_supersets(var, (0..self.data_dimensions.0).collect_vec(), entropy_required_flags)
+            // }
             scores[var][score_idx.index] = (score, index);
             // TO DO: if this score was pruned, just set it to the previous one immediately
             *counter += 1;
 
-            // if output_queries && index == entropy_idx.index { // only output locally optimal scores as query
-            if output_queries && entropy_required {
-                println!("pa_size = {} | {} |{} |", score_idx.vars.len(), score_idx.vars.iter().format(" "), var);
-            }
+
             if let Some(pg) = path_graph {
                 pg.try_update(self.index_set.clone(), entropy_idx, var, score)
             }
         }
         let mut next_generation_vars: Vec<usize> = Vec::new();
-        if !entropy_required && path_graph.is_none() {
+        if pruning && path_graph.is_none() {
             // no need to keep calling if children were pruned and not performing SL
             return;
         }
         for var in variables {
-            let vector_set = self.add_variable(var, entropy_required);
-            vector_set.compute_recursive(data, logn, next_generation_vars.clone(), entropies, scores, counter, output_queries, pruning, path_graph, entropy_required_flags);
+            let vector_set = self.add_variable(var, !pruning);
+            vector_set.compute_recursive(data, logn, next_generation_vars.clone(), entropies, scores, counter, output_queries, pruning, path_graph);
             next_generation_vars.push(var);
         }
         // fill in scores;
@@ -350,8 +344,8 @@ pub struct ScoreTable {
     data: Vec<Vec<u8>>,
     entropies: Vec<f64>, // put this in a Cell or RefRell?
     scores: Vec<Vec<(f64, usize)>>,
-    entropy_required_flags: Vec<bool>,
-    // required: Vec<bool>, // which entropies cannot be pruned, i.e. prune b 
+    //entropy_required_flags: Vec<bool>,
+    // required: Vec<bool>, // which entropies cannot be pruned
     variable_map: VariableMap,
     path_graph: Option<PathGraph>
 }
@@ -395,35 +389,35 @@ impl ScoreTable {
 
         // println!("Loaded data: {} samples of {} variables", n_samples, n_vars);
 
-        let mut entropy_required_flags = vec![false; 2usize.pow(n_vars as u32)];
-        entropy_required_flags[0] = true;
-        for var in 0..n_vars {
-            let index_set = IndexSet::new().add_variable(var);
-            index_set.require_predecessors(&mut entropy_required_flags);
-            for other_var in 0..n_vars {
-                if var == other_var {
-                    continue;
-                }
-                index_set.add_variable(other_var).require_predecessors(&mut entropy_required_flags);
-            }
-        }
+        // let mut entropy_required_flags = vec![false; 2usize.pow(n_vars as u32)];
+        // entropy_required_flags[0] = true;
+        // for var in 0..n_vars {
+        //     let index_set = IndexSet::new().add_variable(var);
+        //     index_set.require_predecessors(&mut entropy_required_flags);
+        //     for other_var in 0..n_vars {
+        //         if var == other_var {
+        //             continue;
+        //         }
+        //         index_set.add_variable(other_var).require_predecessors(&mut entropy_required_flags);
+        //     }
+        // }
 
 
         ScoreTable {
             data: col_major_data,
             entropies: vec![0.0; 2usize.pow(n_vars as u32)],
             scores: vec![vec![(0.0, 0); 2usize.pow(n_vars as u32 - 1)]; n_vars],
-            entropy_required_flags,
+            //entropy_required_flags,
             variable_map,
             path_graph: None
         }
     }
 
     pub fn compute(&mut self, pruning: bool, output_queries: bool, learn_structure: bool) -> Option<String> {
+        if pruning {return self.compute_queue(pruning, learn_structure)};
         let vector_set = VectorSet::from_data(Rc::new(self.data.clone()));
         // println!("initial vector_set {:#?}", vector_set);
         let variables: Vec<usize> = (0..self.data.len()).collect();
-        let size = self.data.len() * 2usize.pow(self.data.len() as u32 - 1);
         let mut counter = 0usize;
         self.path_graph = match learn_structure {
             true => {Some(PathGraph::new(self.data.len()))}
@@ -431,7 +425,7 @@ impl ScoreTable {
         };
 
         let logn: f64 = (self.data[0].len() as f64).log2();
-        vector_set.compute_recursive(&self.data, logn, variables, &mut self.entropies, &mut self.scores, &mut counter, output_queries, pruning, &mut self.path_graph, &mut self.entropy_required_flags);
+        vector_set.compute_recursive(&self.data, logn, variables, &mut self.entropies, &mut self.scores, &mut counter, output_queries, pruning, &mut self.path_graph);//, &mut self.entropy_required_flags);
 
         // if let Some(pg) = &self.path_graph {
         //     // println!("{:#?}", pg.nodes);
@@ -446,6 +440,133 @@ impl ScoreTable {
         }
         
     }
+
+    fn compute_queue(&mut self, pruning: bool, learn_structure: bool,) -> Option<String> {
+        let empty_vector_set = Rc::new(VectorSet::from_data(Rc::new(self.data.clone())));
+        let variables: Vec<usize> = (0..self.data.len()).collect();
+        self.path_graph = match learn_structure {
+            true => {Some(PathGraph::new(self.data.len()))}
+            false => {None}
+        };
+        let n = empty_vector_set.data_dimensions.1 as f64;
+        let logn: f64 = n.log2();
+        let levels_vec = &empty_vector_set.levels;
+        let mut conditional_entropies: Vec<Vec<Option<f64>>> = vec![vec![None; 2usize.pow(variables.len() as u32 - 1)]; variables.len()];
+        let mut penalties: Vec<Vec<Option<f64>>> = vec![vec![None; 2usize.pow(variables.len() as u32 - 1)]; variables.len()];
+
+        let mut queue: VecDeque<QueueItem> = VecDeque::new();
+
+        for i in 0..variables.len() {
+            queue.push_back(QueueItem {
+                data: Rc::clone(&empty_vector_set),
+                added_var: variables[i],
+                descendant_vars: variables[0..i].to_vec(),
+                pruned: false
+            })
+        }
+
+        while let Some(queue_item) = queue.pop_front() {
+            // println!("added: {:#?}", queue_item.added_var);
+            // println!("descendants: {:#?}", queue_item.descendant_vars);
+            // println!("prev index_set: {:#?}", queue_item.data.index_set);
+            let mut pruned = queue_item.pruned;
+            let entropy_node_set = queue_item.data.index_set.add_variable(queue_item.added_var);
+            let mut score_pruned = vec![false; variables.len()];
+            if pruning && !pruned {
+                // attempt to prune with Theorem 1 (de Campos et al. 2017)
+                for x in &variables {
+                    let y_set: IndexSet = match (entropy_node_set.vars.contains(&x), entropy_node_set.vars.len()<=1) {
+                        // (_, true) => empty_vector_set.index_set.clone(),
+                        (true, _) => entropy_node_set.remove_variable(*x),    // (x,y both in entropy_node_set)
+                        (false, _) => entropy_node_set.clone()        // (y in entropy_node_set, x not)
+                    };
+                    if y_set.vars.iter().any(
+                        |y| {
+                            n * f64::min(
+                                conditional_entropies[*x][y_set.remove_variable(*y).remove_variable_and_shift(*x).index].unwrap_or(f64::MIN), // H(X|Pi*)
+                                conditional_entropies[*y][y_set.remove_variable_and_shift(*y).index].unwrap_or(f64::MIN) // H(Y|Pi*)
+                            )
+                            <=
+                            (1.0f64 - levels_vec[*y] as f64)  // 1 - |omega_y|
+                            *
+                        penalties[*x][y_set.remove_variable(*y).remove_variable_and_shift(*x).index].unwrap_or(f64::MAX) // pen(X|Pi*)
+                        }
+                    ){
+                        score_pruned[*x] = true;
+                    } else { // couldn't be pruned, so no need to continue
+                        pruned = false;
+                        break;
+                    }
+                }
+            }
+            if itertools::all(score_pruned, |b| b){
+                pruned = true;
+            }
+            let node_vector_set = Rc::new(queue_item.data.add_variable(queue_item.added_var, !pruned));
+            if !pruned {
+                self.entropies[node_vector_set.index_set.index] = node_vector_set.entropy.expect("expected entropy to have been computed");
+            }
+            // for var in &node_vector_set.index_set.vars { // each target variable in new entropy
+            for (var, parents_score_index, parents_entropy_idx) in node_vector_set.index_set.previous_scores() {
+                // let parents = node_vector_set.index_set.remove_variable(var);
+                let parent_entropy = self.entropies[parents_entropy_idx.index];
+                let mut score = f64::MIN;
+                if !pruned && (parents_score_index.vars.is_empty() || parent_entropy != 0.0) {
+                    // compute respective new score
+                    let levels = node_vector_set.levels[var]; //self.levels[var];
+                    let parent_levels: usize = parents_score_index.vars.iter().map(|x| node_vector_set.levels[*x]).product();
+                    let penalty: f64 = - 0.5 * logn * ((levels - 1) * parent_levels) as f64; //(self.cardinality / levels) as f64 * levels as f64;
+                    let conditional_entropy = node_vector_set.entropy.unwrap() - parent_entropy;
+                    score = - conditional_entropy * n + penalty;
+                    conditional_entropies[var][parents_score_index.index] = Some(conditional_entropy);
+                    penalties[var][parents_score_index.index] = Some(penalty)
+
+                }
+                // for parset_var in parents.vars {
+                //     if self.scores[var][parents.remove_variable(parset_var)] < score
+                // }
+                let mut index = parents_entropy_idx.index;
+                if learn_structure {
+                    for parent_subset_score_index in parents_score_index.predecessors(){ // check if locally optimal
+                        let (prev_score, prev_parset_idx) = self.scores[var][parent_subset_score_index.index];
+                        if prev_score > score {
+                            score = prev_score;
+                            index = prev_parset_idx;
+                        }
+                    }
+                    self.path_graph.as_mut().expect("learn_structure=true, path_graph missing").try_update(node_vector_set.index_set.clone(), parents_entropy_idx, var, score);
+                }
+                self.scores[var][parents_score_index.index] = (score, index);
+            }
+
+
+            // Add entropy graph children to queue
+            let mut next_descendant_vars = Vec::new();
+            if learn_structure || !pruned{
+                for var in queue_item.descendant_vars {
+                    queue.push_back(QueueItem {
+                        data: Rc::clone(&node_vector_set),
+                        added_var: var,
+                        descendant_vars: next_descendant_vars.clone(),
+                        pruned
+                    });
+                    next_descendant_vars.push(var);
+                }
+            }
+
+        }
+
+
+        if let Some(pg) = &self.path_graph {
+            // println!("{:#?}", self.scores);
+            // println!("{:#?}", self.entropies);
+            Some(format!("{:#?}", pg.get_modelstring(&self.variable_map, &self.scores)))
+        } else {
+            None
+        }
+    }
+
+
 }
 impl ScoreLookup for ScoreTable {
     fn lookup_score(&self, target: usize, allowed: usize) -> Score {
@@ -504,6 +625,7 @@ impl PathGraph {
             modelstring += &var_map.get_modelstring_fragment(var, IndexSet::from_index(parent_set).vars);
             allowed_parents.push(var);
         }
+        println!("{:#?}", modelstring);
         modelstring
     }
 }
