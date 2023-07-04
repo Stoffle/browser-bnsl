@@ -130,8 +130,8 @@ pub struct VectorSet {
     data_dimensions: (usize, usize), // (variables, samples)
     levels: Vec<usize>, // number of levels per variable, i.e. max+1
     // splits: VectorSetNode,                  // Tree storing indices and lengths of each sub-vector
-    splits: Vec<usize>, // start indices of sub-vectors
-    sizes: Vec<usize>,  // sizes of sub-vectors
+    splits: Vec<(usize, usize)>, // (start index, size) of each sub-vector
+    // sizes: Vec<usize>,  // sizes of sub-vectors
     index_set: IndexSet, // variables in set, with int representation
     // score computation stuff:
     entropy: Option<f64>,
@@ -167,8 +167,8 @@ impl VectorSet {
             index_vec: (0..n_samples).collect_vec(),
             data_dimensions: (n_vars, n_samples),
             levels,
-            splits: vec![0],
-            sizes: vec![n_samples],
+            splits: vec![(0, n_samples)],
+            // sizes: vec![n_samples],
             index_set: IndexSet::new(),
             entropy: Some(0f64),
             cardinality: 1usize,
@@ -219,7 +219,7 @@ impl VectorSet {
                 data_dimensions: self.data_dimensions,
                 levels: Vec::new(),
                 splits: Vec::new(),
-                sizes: Vec::new(),
+                // sizes: Vec::new(),
                 index_set: self.index_set.add_variable(variable),
                 entropy: None,
                 cardinality: 0
@@ -229,17 +229,19 @@ impl VectorSet {
         //let mut new_data: Vec<Vec<u8>> = Vec::new(); //vec![Vec::with_capacity(self.data_dimensions.1); self.data_dimensions.0];
                                                      // let mut new_tree = self.tree.clone();
         let mut new_index_vec: Vec<usize> = Vec::with_capacity(self.index_vec.len());
-        let mut new_spilts: Vec<usize> = Vec::new();
-        let mut new_sizes: Vec<usize> = Vec::new();
+        let mut new_spilts: Vec<(usize, usize)> = Vec::with_capacity(self.splits.len()*levels) ;// Vec::new();
+        // let mut new_sizes: Vec<usize> = Vec::with_capacity(self.splits.len()*levels); // Vec::new();
         //for (split, size) in self.splits.into_iter().zip(self.sizes) {
         let mut split_index = 0;
         let mut entropy = 0f64;
         let data_col = &self.data[variable];
-        let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::with_capacity(self.sizes.iter().max().unwrap().clone()); levels];
-        for split_idx in 0..self.splits.len() {
+        let biggest_split = self.splits.iter().max_by_key(|x|x.1).unwrap().1.clone();
+        // let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::new(); levels];
+        let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::with_capacity(biggest_split); levels];
+        for split_idx in 0..self.splits.len() { // <--------------------  could parallelise here
             let split = self.splits[split_idx];
-            let size = self.sizes[split_idx];
-            for row_idx in &self.index_vec[split..split + size] {
+            // let size = self.sizes[split_idx];
+            for row_idx in &self.index_vec[split.0 .. split.0 + split.1] {
                 let row_idx_copy = row_idx.clone();
                 sub_vecs[data_col[row_idx_copy] as usize].push(row_idx_copy);
             }
@@ -250,8 +252,8 @@ impl VectorSet {
                 if size == 0 {
                     continue;
                 }
-                new_spilts.push(split_index);
-                new_sizes.push(size);
+                new_spilts.push((split_index, size));
+                // new_sizes.push(size);
                 split_index += size;
                 new_index_vec.append(&mut sub_vecs[i]); // leaves sub_vec empty
                 let px = size as f64 / self.data_dimensions.1 as f64;
@@ -266,7 +268,7 @@ impl VectorSet {
             data_dimensions: self.data_dimensions,      // |
             levels: self.levels.clone(),                // | TODO: remove these copies? can just be argument to compute_recursive()
             splits: new_spilts,
-            sizes: new_sizes,
+            // sizes: new_sizes,
             index_set: self.index_set.add_variable(variable),
             entropy: Some(entropy),
             cardinality: (self.cardinality * levels)
