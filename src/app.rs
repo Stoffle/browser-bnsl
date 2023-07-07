@@ -247,13 +247,14 @@ impl BrowserBNSL {
                                     let data_info_clone = data_info.clone();
                                     let p_switch = self.prune_switch.clone();
                                     let l_switch = self.learn_switch.clone();
-                                    thread::spawn(move || {
+                                    //thread::spawn(move || {
+                                    thread::Builder::new().name("structure learning".to_string()).spawn(move || {
                                         //tx_clone.send(sl::sl_wrapper(file.clone())); //sl::SLState::Queued(file)));
                                         if let Some(res) = sl::sl_wrapper(data_info_clone.clone(), f, p_switch, l_switch) {
                                             tx_clone.send(res)
                                         } else {tx_clone.send(sl::SLState::Failed(data_info_clone))}
                                         //tx_clone.send(sl::sl_wrapper(f)).unwrap();
-                                    });
+                                    }).unwrap(); // OS-level thread spawning failures panic for now
                                     self.sl_states[i] = sl::SLState::Running(data_info.clone(), file.clone(), Utc::now());
                                     self.busy = true;
                                     ctx.request_repaint();
