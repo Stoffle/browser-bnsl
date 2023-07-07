@@ -2,12 +2,70 @@ use crate::int_utils::IndexSet;
 use crate::scoring::{Score, VariableMap, ScoreLookup};
 use csv;
 use itertools::Itertools;
-use std::cmp::min;
 use std::collections::VecDeque;
-use std::{fs::File, rc::Rc};
+use std::{fs::File, rc::Rc, slice};
 //use std::time::{Duration, Instant};
 use egui::DroppedFile;
 use chrono::prelude::*;
+
+// macro_rules! split_recursive {
+//     // Base case, final split:
+//     ($in_vec:expr, $splits_vec:expr, $split_idx:expr) => {
+//         {
+//             let (left, right) = $in_vec.split_at_mut($split_idx);
+//             $splits_vec.push(left);
+//             $splits_vec.push(right);
+//         }
+//     };
+//     // More than one split left to do
+//     ($in_vec:expr, $splits_vec:expr, $split_idx:expr, $($more_split_idx:expr), +) => {
+//         {
+//             let (left, right) = $in_vec.split_at_mut($split_idx);
+//             $splits_vec.push(left);
+//             split_recursive!(right, $splits_vec, $($more_split_idx),+)
+//         }
+//     }
+// }
+
+
+fn split_between_mut<T>(x: &mut Vec<T>, splits: Vec<(usize, usize)>) -> Vec<&mut [T]> {
+    let mut ptr = x.as_mut_ptr();
+    let mut new_vec = Vec::new();
+    unsafe {
+        for (_, size) in splits {
+            new_vec.push(slice::from_raw_parts_mut(ptr, size));
+            ptr = ptr.add(size);
+        }
+        
+    }
+    new_vec
+}
+
+fn slice_at_mut<T: From<usize> + Eq>(x: &mut Vec<T>, index: usize) -> &mut [T] {
+    let len = x.len();
+    let mut ptr = x.as_mut_ptr();
+    assert!(index < len); // don't want to read out of bounds
+    assert!(x[index] == T::from(0usize)); // only get mutable ref if the value hasn't been set, for relative safety
+    unsafe {
+        ptr = ptr.add(index);
+        slice::from_raw_parts_mut(ptr, 1)
+    }
+}
+
+fn slice_at_mut_multiple<T: From<usize> + Eq>(x: &mut Vec<T>, indices: Vec<usize>) -> Vec<&mut [T]> {
+    let len = x.len();
+    let mut slice_vec = Vec::new();
+    let ptr = x.as_mut_ptr();
+    unsafe {
+        for index in indices {
+            assert!(index < len);
+            assert!(x[index] == T::from(0usize));
+            slice_vec.push(slice::from_raw_parts_mut(ptr.add(index), 1))
+        }
+    }
+    slice_vec
+}
+
 
 #[derive(Clone)]
 pub struct DataInfo {
@@ -434,7 +492,7 @@ impl ScoreTable {
         
     }
 
-    fn compute_queue(&mut self, pruning: bool, learn_structure: bool,) -> Option<String> {
+    fn compute_queue(&mut self, pruning: bool, learn_structure: bool) -> Option<String> {
         let empty_vector_set = Rc::new(VectorSet::from_data(Rc::new(self.data.clone())));
         let variables: Vec<usize> = (0..self.data.len()).collect();
         self.path_graph = match learn_structure {
@@ -563,6 +621,10 @@ impl ScoreTable {
         } else {
             None
         }
+    }
+
+    fn do_queue_item(){
+        unimplemented!()
     }
 
 
