@@ -1,18 +1,8 @@
 
 use crate::int_utils::int_subset;
-use std::collections::VecDeque;
-use std::{collections::HashMap};
-use std::str::FromStr;
-use std::fs::File;
-use itertools::{Itertools};
+use std::collections::HashMap;
+use itertools::Itertools;
 
-type ParseErr = Box<dyn std::error::Error>;
-
-macro_rules! usize_ceil_log2 {
-    ($val:expr) => {
-        ($val as f64).log2().ceil() as usize
-    }
-}
 
 pub trait ScoreLookup {
     fn lookup_score(&self, target: usize, allowed: usize) -> Score;

@@ -2,6 +2,6 @@
 
 mod app;
 pub use app::BrowserBNSL;
-mod sl;
+pub mod sl;
 mod scoring;
 mod int_utils;

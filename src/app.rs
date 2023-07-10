@@ -1,4 +1,3 @@
-use csv;
 use crate::sl;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -344,9 +343,6 @@ impl BrowserBNSL {
         }
     }
 
-    fn sl_window(&mut self, ctx: &egui::Context) {
-        unimplemented!()
-    }
 
 
 }

@@ -28,45 +28,6 @@ use chrono::prelude::*;
 // }
 
 
-fn split_between_mut<T>(x: &mut Vec<T>, splits: Vec<(usize, usize)>) -> Vec<&mut [T]> {
-    let mut ptr = x.as_mut_ptr();
-    let mut new_vec = Vec::new();
-    unsafe {
-        for (_, size) in splits {
-            new_vec.push(slice::from_raw_parts_mut(ptr, size));
-            ptr = ptr.add(size);
-        }
-        
-    }
-    new_vec
-}
-
-fn slice_at_mut<T: From<usize> + Eq>(x: &mut Vec<T>, index: usize) -> &mut [T] {
-    let len = x.len();
-    let mut ptr = x.as_mut_ptr();
-    assert!(index < len); // don't want to read out of bounds
-    assert!(x[index] == T::from(0usize)); // only get mutable ref if the value hasn't been set, for relative safety
-    unsafe {
-        ptr = ptr.add(index);
-        slice::from_raw_parts_mut(ptr, 1)
-    }
-}
-
-fn slice_at_mut_multiple<T: From<usize> + Eq>(x: &mut Vec<T>, indices: Vec<usize>) -> Vec<&mut [T]> {
-    let len = x.len();
-    let mut slice_vec = Vec::new();
-    let ptr = x.as_mut_ptr();
-    unsafe {
-        for index in indices {
-            assert!(index < len);
-            assert!(x[index] == T::from(0usize));
-            slice_vec.push(slice::from_raw_parts_mut(ptr.add(index), 1))
-        }
-    }
-    slice_vec
-}
-
-
 #[derive(Clone)]
 pub struct DataInfo {
     pub name: String,
@@ -298,6 +259,14 @@ impl VectorSet {
         let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::with_capacity(biggest_split); levels];
         for split in &self.splits { // <--------------------  could parallelise here
             // let size = self.sizes[split_idx];
+            // if split.1 < 5 {
+            //     // if split is small, use insertion sort
+            //     for level in 0..levels as u8 {
+            //         let start_len = new_index_vec.len();
+            //         new_index_vec.extend(&self.index_vec[split.0 .. split.0 + split.1].iter().filter(|row_idx| data_col[**row_idx] == level).map(|x| *x).collect_vec());
+            //         new_spilts.push((start_len, new_index_vec.len() - start_len));
+            //     }
+            // }
             for row_idx in &self.index_vec[split.0 .. split.0 + split.1] {
                 sub_vecs[data_col[*row_idx] as usize].push(*row_idx);
             }
@@ -400,7 +369,7 @@ pub struct ScoreTable {
 
 impl ScoreTable {
     pub fn from_csv(file: File) -> ScoreTable {
-        let mut rdr = csv::ReaderBuilder::new()
+        let rdr = csv::ReaderBuilder::new()
             .has_headers(true)
             .delimiter(b',')
             .escape(Some(b'\\'))
@@ -419,7 +388,6 @@ impl ScoreTable {
         }
         let mut data: Vec<Vec<u8>> = Vec::new();
         let mut levels: Vec<usize> = vec![0; n_vars];
-        let mut n_samples: usize = 0;
         for result in rdr.deserialize() {
             // to do: use hashmap to convert arbitrary string to ints
             let record: Vec<u8> = result.expect("Failed to parse csv");
@@ -430,7 +398,6 @@ impl ScoreTable {
                 // we add 1 to get levels from max (as we start with 0)
             }
             data.push(record);
-            n_samples += 1;
         }
         // println!("{:#?}", variable_map);
         let col_major_data: Vec<Vec<u8>> = transpose(data);
@@ -714,10 +681,10 @@ mod tests {
             index_vec: (0..8).collect_vec(),
             data_dimensions: (3, 8),
             levels: vec![2, 3, 4],
-            splits: vec![0],
-            sizes: vec![8],
+            splits: vec![(0, 8)],
+            // sizes: vec![8],
             index_set: IndexSet::new(),
-            entropy: 0f64,
+            entropy: None,
             cardinality: 0usize
         }
     }
@@ -743,8 +710,8 @@ mod tests {
             vs0.index_vec,
             vec![0,1,4,5,2,3,6,7]
         );
-        assert_eq!(vs0.splits, vec![0, 4]);
-        assert_eq!(vs0.sizes, vec![4, 4]);
+        assert_eq!(vs0.splits, vec![(0, 4), (4, 4)]);
+        // assert_eq!(vs0.sizes, vec![4, 4]);
         assert_eq!(
             vs0.index_set,
             IndexSet {
@@ -771,8 +738,8 @@ mod tests {
             vs01.index_vec,
             vec![4,5,0,1,6,7,2,3]
         );
-        assert_eq!(vs01.splits, vec![0, 2, 4, 4, 6, 8]);
-        assert_eq!(vs01.sizes, vec![2, 2, 0, 2, 2, 0]);
+        assert_eq!(vs01.splits, vec![(0, 2), (2, 2), (4, 2), (6, 2)]);
+        // assert_eq!(vs01.sizes, vec![2, 2, 0, 2, 2, 0]);
         assert_eq!(
             vs01.index_set,
             IndexSet {
@@ -782,8 +749,12 @@ mod tests {
         );
         assert_eq!(vs01.entropy.unwrap(), -2f64);
         let vs012 = vs01.add_variable(2, true);
-        assert_eq!(vs012.splits, vec![0, 1, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 6, 6, 6, 7, 8, 8, 8, 8]);
-        assert_eq!(vs012.sizes,    vec![1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0]);
+        let splits = vec![0usize, 1, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 6, 6, 6, 7, 8, 8, 8, 8];
+        let sizes = vec![1usize, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0];
+        assert_eq!(vs012.splits, splits.iter().zip(sizes).filter(|(_, s)| s > &0).map(|(a,b)| (*a, b)).collect_vec());
+        
+        // assert_eq!(vs012.splits, vec![0, 1, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 6, 6, 6, 7, 8, 8, 8, 8]);
+        // assert_eq!(vs012.sizes,    vec![1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0]);
         assert_eq!(vs012.entropy.unwrap(), -3f64);
     }
 
