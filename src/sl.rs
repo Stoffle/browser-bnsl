@@ -296,12 +296,10 @@ impl VectorSet {
         let biggest_split = self.splits.iter().max_by_key(|x|x.1).unwrap().1.clone();
         // let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::new(); levels];
         let mut sub_vecs: Vec<Vec<usize>> = vec![Vec::with_capacity(biggest_split); levels];
-        for split_idx in 0..self.splits.len() { // <--------------------  could parallelise here
-            let split = self.splits[split_idx];
+        for split in &self.splits { // <--------------------  could parallelise here
             // let size = self.sizes[split_idx];
             for row_idx in &self.index_vec[split.0 .. split.0 + split.1] {
-                let row_idx_copy = row_idx.clone();
-                sub_vecs[data_col[row_idx_copy] as usize].push(row_idx_copy);
+                sub_vecs[data_col[*row_idx] as usize].push(*row_idx);
             }
             // for ref mut sub_vec in sub_vecs {
             for i in 0..levels {
