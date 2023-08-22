@@ -357,6 +357,7 @@ impl VectorSet {
     }
 }
 
+#[derive(Clone)]
 pub struct ScoreTable {
     data: Vec<Vec<u8>>,
     entropies: Vec<f64>, // put this in a Cell or RefRell?
@@ -577,7 +578,7 @@ impl ScoreTable {
 
         }
 
-        println!("Joint entropies: {:#?}, scores: {:#?}", entropy_counter, score_counter);
+        // println!("Joint entropies: {:#?}, scores: {:#?}", entropy_counter, score_counter);
 
         if let Some(pg) = &self.path_graph {
             // println!("{:#?}", self.scores);
@@ -588,9 +589,6 @@ impl ScoreTable {
         }
     }
 
-    fn do_queue_item(){
-        unimplemented!()
-    }
 
 
 }
@@ -607,7 +605,7 @@ impl ScoreLookup for ScoreTable {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PathGraph {
     nodes: Vec<PathGraphNode>,
     n_vars: usize
@@ -631,7 +629,7 @@ impl PathGraph {
     pub fn recover_order(&self) -> Vec<usize> {
         let mut current_node = IndexSet::from_index(self.nodes.len() - 1);
         let mut order: Vec<usize> = Vec::new();
-        println!("Total path length: {:#?}", self.nodes[current_node.index].path_length);
+        // println!("Total path length: {:#?}", self.nodes[current_node.index].path_length);
         for _ in 0..self.n_vars {
             let node = self.nodes[current_node.index];
             order.push(node.var_added);
@@ -652,7 +650,7 @@ impl PathGraph {
             modelstring += &var_map.get_modelstring_fragment(var, IndexSet::from_index(parent_set).vars);
             allowed_parents.push(var);
         }
-        println!("{:#?}", modelstring);
+        // println!("{:#?}", modelstring);
         modelstring
     }
 }

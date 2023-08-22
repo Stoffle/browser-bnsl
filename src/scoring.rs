@@ -143,7 +143,7 @@ fn create_score(s: &str, varmap: &mut VariableMap) -> Score {
 //     }
 // }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VariableMap {
     map: HashMap<String, usize>,
     vector: Vec<String>,
