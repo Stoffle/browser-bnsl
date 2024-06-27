@@ -55,6 +55,6 @@ criterion = "0.5.1"
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
 
-[[bench]]
-name = "sl_benchmarks"
-harness = false
+# [[bench]]
+# name = "sl_benchmarks"
+# harness = false
