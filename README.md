@@ -1,6 +1,6 @@
 # Browser-based BNSL
 
-To test running in a browser, [click here](https://stoffle.github.io/browser-bnsl/).
+To test running in a browser, [click here](https://stoffle.github.io/browser-bnsl).
 
 To run natively, clone the repo and run it with cargo (i.e. `cargo run --release`).
 
